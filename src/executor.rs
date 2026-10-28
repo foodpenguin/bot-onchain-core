@@ -842,7 +842,9 @@ mod tests {
     #[tokio::test]
     #[ignore = "child half of shared_nonce_lock_serialises_two_processes"]
     async fn child_bumps_the_shared_nonce() {
-        let s = SharedNonce { path: std::env::var("ONCHAIN_CORE_NONCE_PATH").unwrap().into() };
+        // Only meaningful when started by its parent test (`cargo test -- --ignored` runs it alone).
+        let Ok(path) = std::env::var("ONCHAIN_CORE_NONCE_PATH") else { return };
+        let s = SharedNonce { path: path.into() };
         for _ in 0..CHILD_BUMPS {
             let mut f = s.lock().await.unwrap();
             let next = match SharedNonce::read(&mut f) {
@@ -933,7 +935,8 @@ mod tests {
     #[test]
     #[ignore = "child half of password_env_is_read_then_removed_in_a_single_threaded_process"]
     fn child_load_signer_from_env() {
-        let path = std::env::var("BOT_TEST_KS_PATH").unwrap();
+        // Only meaningful when started by its parent test (`cargo test -- --ignored` runs it alone).
+        let Ok(path) = std::env::var("BOT_TEST_KS_PATH") else { return };
         let s = load_signer(&path, "BOT_TEST_KS_PASSWORD").unwrap();
         assert_eq!(s.address().to_string(), std::env::var("BOT_TEST_KS_ADDR").unwrap());
         assert!(std::env::var("BOT_TEST_KS_PASSWORD").is_err(), "password env var must be removed after use");

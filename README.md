@@ -1,0 +1,78 @@
+# onchain-core
+
+[繁體中文](README.zh-TW.md)
+
+The plumbing that on-chain bots share, as a Rust library ([alloy](https://github.com/alloy-rs/alloy)):
+RPC pool, head and Flashblocks streams, exact simulation with `eth_simulateV1`, keystore signing,
+broadcast, nonce coordination between bots, the executor (as its own task), send gates and
+priority-fee bidding against observed competition. It is what
+`liquidation-framework` and `arbitrage-framework`
+are built on; it knows nothing about lending protocols or arbitrage strategies.
+
+> **Status:** experimental. Nothing here is financial advice. Code that signs and sends is tested
+> on local anvil chains; run your bot in a shadow / observe mode first.
+
+## Modules
+
+| Module | What it does |
+|---|---|
+| `rpc` | Multi-endpoint JSON-RPC pool for alloy: race or fail over by priority, per-endpoint `skip_methods` and log-range limits, lagging nodes tried elsewhere without a cooldown, capacity errors (matched by phrases) fail over, deterministic errors of the call itself never do. Logs show endpoint names, never URLs (they carry API keys). |
+| `heads` | New-head signal: WS `newHeads` on several endpoints at once (first one wins), HTTP polling fallback. |
+| `flashblocks` | Base Flashblocks: message decoding, a reconnecting reader (`run_stream`), and every flashblock in arrival order (`spawn_raw`). Nothing else depends on it (Base's "Denim" upgrade removes Flashblocks). |
+| `chain`, `num` | Multicall3 batched reads; unit conversion and full-precision mul-div. |
+| `sim` | One call simulated exactly as it would run: `eth_simulateV1` on a block plus state overrides, optionally as the next block, priced at the real fee (a sender balance override keeps nodes from refusing it), with the gas used, the L1 data fee, and an optional probe read in the same state. |
+| `executor` | Signing from an encrypted keystore (password from an env var removed after reading, or a prompt), broadcast to every endpoint over warm connections, local nonce plus a per-wallet shared nonce file, several txs in flight with consecutive nonces (`TxKey` = what a tx is about; two with the same key never fly together), dropped / stuck txs replaced by a 0-value self-transfer, failure cooldown. |
+| `actor` | The executor as its own task: `ExecHandle` reads its state synchronously and sends as messages; receipts are polled on every announced block; settled txs come back on a channel. Planning and the block loop never wait for a receipt. |
+| `gates` | The checks before every send: kill-switch file, daily budget for gas burned by reverted txs, plus deadlines in blocks, gas and L1-fee costs (OP-stack GasPriceOracle). |
+| `bid` | Priority fees against competition: `WinningBids` keeps what past winners paid per USD of gross profit (per group, over a time window); `BidCurve` bids just above the predicted competitor, never more than a share of the net that grows with the size of the opportunity, never below the base priority. |
+| `config` | The config sections every bot `#[serde(flatten)]`s into its own: `RpcSettings` (endpoints and the `.env` holding their keys) and `SendSettings` (wallet, mode, keystore, broadcast, kill switch, nonce file, budget, failure policy, `max_inflight`). |
+
+## Using it
+
+The three repositories are meant to be checked out side by side; the frameworks depend on this
+crate by path until it is published with a tag:
+
+```
+<dir>/onchain-core
+<dir>/liquidation-framework    # bot/Cargo.toml: onchain-core = { path = "../../onchain-core" }
+<dir>/arbitrage-framework      # bot/Cargo.toml: onchain-core = { path = "../../onchain-core" }
+```
+
+A minimal sender:
+
+```rust
+use onchain_core::{actor, executor::{Broadcaster, Executor}};
+
+let signer = executor::load_signer(&keystore, "BOT_KEYSTORE_PASSWORD")?; // before the async runtime
+// ... inside the runtime:
+let bcast = Broadcaster::new(Broadcaster::client()?, endpoints);
+let mut exec = Executor::new(provider.clone(), signer, chain_id, bcast, settings.failure_policy())
+    .with_shared_nonce(settings.nonce_path(address))
+    .with_max_inflight(settings.max_inflight);
+exec.sync_nonce().await?;
+exec.spawn_nonce_watch(executor::NONCE_WATCH_EVERY);
+let (handle, mut settled) = actor::spawn(exec, blocks_rx); // blocks_rx: watch::Receiver<u64>
+let inflight = handle.send(request).await?;               // check gates::Gates first
+```
+
+## The shared nonce file
+
+Every bot that signs for one wallet locks one file per wallet around sign + broadcast
+(`~/.local/state/onchain-bots/nonce-<wallet>` by default) and records the next nonce in it, in the
+format `v1 <next nonce> <unix ms>`. A bot that finds a format it does not know refuses to send
+rather than guess (`executor::SHARED_NONCE_VERSION`). Bots built on different, incompatible
+versions must not share a wallet.
+
+## Checks
+
+```
+cargo check --all-targets   # 0 warnings
+cargo test                  # unit tests, incl. a two-process test of the nonce lock
+cargo test -- --ignored     # the executor task against a local anvil chain (needs anvil)
+```
+
+## License
+
+[GNU Affero General Public License v3.0 or later](LICENSE). This software is provided without any
+warranty. See [SECURITY.md](SECURITY.md) to report a vulnerability and
+[CONTRIBUTING.md](CONTRIBUTING.md) to contribute.
