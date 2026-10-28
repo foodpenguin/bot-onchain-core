@@ -8,12 +8,14 @@
 //! - `executor`: keystore signing, broadcast to every endpoint, local + shared nonce, several txs
 //!   in flight, stuck-tx cancel, failure cooldown; `actor` runs it as its own task;
 //! - `gates`: kill switch, daily budget for reverted gas, deadlines, gas and L1-fee costs;
+//! - `bid`: priority-fee bids against the observed winning bids;
 //! - `config`: the config sections every bot flattens into its own.
 //!
 //! Every bot that signs for one wallet must use the same version of the shared nonce file format
 //! (`executor::SHARED_NONCE_VERSION`): a bot that finds another format refuses to send.
 
 pub mod actor;
+pub mod bid;
 pub mod chain;
 pub mod config;
 pub mod executor;
