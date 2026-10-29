@@ -35,6 +35,8 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use tracing::{info, warn};
 
+use crate::gates::unix_ms;
+
 /// Where in the calldata the minProfit field lives (patched at send time).
 #[derive(Debug, Clone, Copy)]
 pub struct MinProfitSlot {
@@ -145,10 +147,6 @@ impl SharedNonce {
             warn!("shared nonce file write failed");
         }
     }
-}
-
-fn unix_ms() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }
 
 /// Writes `value` big-endian into the minProfit field.
@@ -535,11 +533,6 @@ impl<P: Provider> Executor<P> {
         self
     }
 
-    /// Not halted and below max_inflight.
-    pub fn can_send(&self) -> bool {
-        !self.halted() && self.inflight.len() < self.max_inflight
-    }
-
     /// A tx with this key is already in flight.
     pub fn is_inflight(&self, key: TxKey) -> bool {
         self.inflight.iter().any(|i| i.key == key)
@@ -553,14 +546,6 @@ impl<P: Provider> Executor<P> {
     /// The configured maximum in flight.
     pub fn max_inflight(&self) -> usize {
         self.max_inflight
-    }
-
-    /// The last background balance reading minus what the txs in flight may still burn at most
-    /// (None = no reading yet: call `balance`).
-    pub fn spendable(&self) -> Option<U256> {
-        let b = (*self.balance.lock().unwrap())?;
-        let reserved: u128 = self.inflight.iter().map(|i| i.gas_limit as u128 * i.max_fee_wei).sum();
-        Some(b.saturating_sub(U256::from(reserved)))
     }
 
     /// Records a failed / dropped tx (may start a cooldown).
@@ -765,8 +750,8 @@ impl<P: Provider> Executor<P> {
                 self.nonce = None;
             }
         }
-        // A settled tx is no longer reserved by `spendable`: read the balance it left now, not at
-        // the next background reading.
+        // A settled tx is no longer reserved by `actor::ExecView::spendable`: read the balance it
+        // left now, not at the next background reading.
         if !out.is_empty()
             && let Ok(b) = self.provider.get_balance(self.address).await
         {

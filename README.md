@@ -70,6 +70,7 @@ share a wallet.
 
 ```
 cargo check --all-targets   # 0 warnings
+cargo clippy --all-targets   # 0 warnings
 cargo test                  # unit tests, incl. a two-process test of the nonce lock
 cargo test -- --ignored     # the executor task against a local anvil chain (needs anvil)
 ```

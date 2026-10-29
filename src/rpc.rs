@@ -10,6 +10,7 @@
 //!   eth_simulateV1 on a node that refuses it, or eth_getLogs on one that is slow at it), nor ones
 //!   it answered with "method not found" (learned for 10 minutes, without cooling the endpoint down);
 //! - deterministic JSON-RPC errors (e.g. "execution reverted") are returned as-is.
+//!
 //! Endpoint URLs carry API keys: only endpoint *names* are ever logged.
 
 use std::{

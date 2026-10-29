@@ -5,7 +5,7 @@ Flashblocks, `eth_simulateV1` simulation, executor (+ actor task), send gates, b
 sections. It must stay free of anything protocol- or strategy-specific.
 
 ## Commands
-- `cargo check --all-targets` must stay at **0 warnings**; `cargo test` must pass;
+- `cargo check --all-targets` and `cargo clippy --all-targets` must stay at **0 warnings**; `cargo test` must pass;
   `cargo test -- --ignored` runs the executor task against a local anvil chain.
 - A change here must also build and pass the tests of `../liquidation-framework/bot` and
   `../arbitrage-framework/bot` (they depend on this crate by path).

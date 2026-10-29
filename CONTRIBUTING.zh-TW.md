@@ -9,6 +9,7 @@
 
 ```
 cargo check --all-targets   # 0 warnings
+cargo clippy --all-targets   # 0 warnings
 cargo test
 cargo test -- --ignored     # 需要 anvil：在本地鏈上測試 executor task
 ```

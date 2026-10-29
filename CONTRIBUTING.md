@@ -9,6 +9,7 @@ correctness and safety come before features.
 
 ```
 cargo check --all-targets   # 0 warnings
+cargo clippy --all-targets   # 0 warnings
 cargo test
 cargo test -- --ignored     # needs anvil: the executor task on a local chain
 ```

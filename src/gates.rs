@@ -16,6 +16,16 @@ use anyhow::Result;
 
 use crate::executor::TxKey;
 
+/// Wall-clock unix seconds (the budget's UTC day, journal timestamps).
+pub fn unix_secs() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+/// Wall-clock unix milliseconds.
+pub fn unix_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
+}
+
 /// The kill switch: while this file exists nothing is sent. An empty path = no kill switch.
 pub fn kill_switch_on(path: &str) -> bool {
     !path.is_empty() && std::path::Path::new(path).exists()

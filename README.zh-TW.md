@@ -66,6 +66,7 @@ let inflight = handle.send(request).await?;               // check gates::Gates 
 
 ```
 cargo check --all-targets   # 0 warnings
+cargo clippy --all-targets   # 0 warnings
 cargo test                  # 單元測試，包含 nonce 鎖的雙 process 測試
 cargo test -- --ignored     # 在本地 anvil 鏈上測試 executor task（需要 anvil）
 ```
