@@ -14,8 +14,9 @@ cargo test
 cargo test -- --ignored     # 需要 anvil：在本地鏈上測試 executor task
 ```
 
-這裡的改動也要在兩個框架（`liquidation-framework`、`arbitrage-framework`）上檢查：編譯它們並跑
-它們的測試（改到 executor、關卡或模擬時，還要跑它們的 anvil e2e 測試）。
+這裡的改動也要在兩個框架（[Debt-keeper](https://github.com/foodpenguin/Debt-keeper)、
+[Arb-seeker](https://github.com/foodpenguin/Arb-seeker)）上檢查：用你本機的 checkout 編譯它們（見 README
+的「使用方式」）並跑它們的測試（改到 executor、關卡或模擬時，還要跑它們的 anvil e2e 測試）。
 
 ## 原則
 

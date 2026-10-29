@@ -1,4 +1,4 @@
-//! Shared plumbing for on-chain bots, used by `liquidation-framework` and `arbitrage-framework`:
+//! Shared plumbing for on-chain bots, used by the Debt-keeper and Arb-seeker frameworks:
 //!
 //! - `rpc`: a multi-endpoint JSON-RPC pool (race / failover by priority, method and log-range
 //!   limits, lag handling, capacity vs deterministic errors; logs show endpoint names only);

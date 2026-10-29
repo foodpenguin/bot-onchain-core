@@ -1,12 +1,13 @@
-# onchain-core
+# bot-onchain-core
 
 [English](README.md)
 
 鏈上 bot 共用的基礎管線，是一個 Rust 函式庫（[alloy](https://github.com/alloy-rs/alloy)）：
 RPC 池、新區塊和 Flashblocks 串流、用 `eth_simulateV1` 做的精確模擬、keystore 簽名、廣播、
 bot 之間的 nonce 協調、executor（作為獨立的 task）、送單關卡，以及依觀察到的競爭對手決定的
-priority fee 出價。`liquidation-framework` 和 `arbitrage-framework` 都建立在它之上；它對借貸協議
-或套利策略一無所知。
+priority fee 出價。crate 名稱是 `onchain-core`；[Debt-keeper](https://github.com/foodpenguin/Debt-keeper)（清算）
+和 [Arb-seeker](https://github.com/foodpenguin/Arb-seeker)（套利）都建立在它之上。它對借貸協議或套利策略
+一無所知。
 
 > **狀態：**實驗性。這裡沒有任何投資建議。會簽名和送單的程式碼是在本地 anvil 鏈上測試的；請先用
 > shadow／觀察模式跑你的 bot。
@@ -28,12 +29,17 @@ priority fee 出價。`liquidation-framework` 和 `arbitrage-framework` 都建�
 
 ## 使用方式
 
-三個 repo 要並排 checkout；在發佈帶 tag 的版本之前，兩個框架都以路徑依賴這個 crate：
+依賴帶 tag 的版本（兩個框架也是這樣鎖定版本）：
+
+```toml
+[dependencies]
+onchain-core = { git = "https://github.com/foodpenguin/bot-onchain-core", tag = "v0.1.0" }
+```
+
+要讓框架改用本機 checkout 的這個 repo 編譯（例如兩邊同時在改），在框架的 `bot/` 目錄覆寫依賴：
 
 ```
-<dir>/onchain-core
-<dir>/liquidation-framework    # bot/Cargo.toml: onchain-core = { path = "../../onchain-core" }
-<dir>/arbitrage-framework      # bot/Cargo.toml: onchain-core = { path = "../../onchain-core" }
+cargo test --config 'patch."https://github.com/foodpenguin/bot-onchain-core".onchain-core.path="../../bot-onchain-core"'
 ```
 
 最小的送單範例：

@@ -1,13 +1,14 @@
-# onchain-core
+# bot-onchain-core
 
 [繁體中文](README.zh-TW.md)
 
 The plumbing that on-chain bots share, as a Rust library ([alloy](https://github.com/alloy-rs/alloy)):
 RPC pool, head and Flashblocks streams, exact simulation with `eth_simulateV1`, keystore signing,
 broadcast, nonce coordination between bots, the executor (as its own task), send gates and
-priority-fee bidding against observed competition. It is what
-`liquidation-framework` and `arbitrage-framework`
-are built on; it knows nothing about lending protocols or arbitrage strategies.
+priority-fee bidding against observed competition. The crate is `onchain-core`; it is what
+[Debt-keeper](https://github.com/foodpenguin/Debt-keeper) (liquidations) and
+[Arb-seeker](https://github.com/foodpenguin/Arb-seeker) (arbitrage) are built on. It knows nothing
+about lending protocols or arbitrage strategies.
 
 > **Status:** experimental. Nothing here is financial advice. Code that signs and sends is tested
 > on local anvil chains; run your bot in a shadow / observe mode first.
@@ -29,13 +30,18 @@ are built on; it knows nothing about lending protocols or arbitrage strategies.
 
 ## Using it
 
-The three repositories are meant to be checked out side by side; the frameworks depend on this
-crate by path until it is published with a tag:
+Depend on a tagged release (the frameworks pin one the same way):
+
+```toml
+[dependencies]
+onchain-core = { git = "https://github.com/foodpenguin/bot-onchain-core", tag = "v0.1.0" }
+```
+
+To build a framework against a local checkout of this repository instead (e.g. while changing
+both), override the dependency from the framework's `bot/` directory:
 
 ```
-<dir>/onchain-core
-<dir>/liquidation-framework    # bot/Cargo.toml: onchain-core = { path = "../../onchain-core" }
-<dir>/arbitrage-framework      # bot/Cargo.toml: onchain-core = { path = "../../onchain-core" }
+cargo test --config 'patch."https://github.com/foodpenguin/bot-onchain-core".onchain-core.path="../../bot-onchain-core"'
 ```
 
 A minimal sender:

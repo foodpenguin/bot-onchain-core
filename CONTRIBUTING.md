@@ -15,8 +15,9 @@ cargo test -- --ignored     # needs anvil: the executor task on a local chain
 ```
 
 A change here is also checked against both frameworks
-(`liquidation-framework`, `arbitrage-framework`):
-build them and run their tests (and their anvil e2e tests when the executor, the gates or the
+([Debt-keeper](https://github.com/foodpenguin/Debt-keeper),
+[Arb-seeker](https://github.com/foodpenguin/Arb-seeker)): build them against your checkout (see
+"Using it" in the README) and run their tests (and their anvil e2e tests when the executor, the gates or the
 simulation change).
 
 ## Guidelines
