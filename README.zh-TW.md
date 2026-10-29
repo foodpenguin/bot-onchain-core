@@ -20,9 +20,9 @@ priority fee 出價。`liquidation-framework` 和 `arbitrage-framework` 都建�
 | `flashblocks` | Base Flashblocks：訊息解碼、會自動重連的讀取器（`run_stream`），以及依到達順序取得每一個 flashblock（`spawn_raw`）。其他模組都不依賴它（Base 的 "Denim" 升級會移除 Flashblocks）。 |
 | `chain`、`num` | Multicall3 批次讀取；單位換算和全精度的乘除。 |
 | `sim` | 把一個呼叫照它實際會執行的樣子精確模擬：在某個區塊加上 state override 上執行 `eth_simulateV1`，可選擇當成下一個區塊，以實際的 fee 計價（發送者的餘額覆寫讓節點不會拒絕），回傳用掉的 gas、L1 data fee，以及在同一個狀態裡的可選探測讀取。 |
-| `executor` | 從加密 keystore 簽名（密碼來自讀完就刪除的環境變數，或提示輸入）、透過預熱的連線廣播到每個端點、本地 nonce 加上每個錢包一份的共用 nonce 檔、多筆 nonce 連續的交易同時在飛（`TxKey` = 這筆交易針對的對象；key 相同的兩筆絕不同時在飛）、被丟棄或卡住的交易用 0 元自轉帳取代、失敗冷卻。 |
-| `actor` | 作為獨立 task 的 executor：`ExecHandle` 同步讀取它的狀態，並以訊息送單；每個公告的區塊都會輪詢 receipt；已結算的交易透過 channel 回傳。規劃和區塊迴圈從不等 receipt。 |
-| `gates` | 每次送單前的檢查：緊急停止檔案、revert 交易燒掉的 gas 的每日預算，以及以區塊計的期限、gas 和 L1 fee 成本（OP-stack GasPriceOracle）。 |
+| `executor` | 從加密 keystore 簽名（密碼來自讀完就刪除的環境變數，或提示輸入）、透過預熱的連線廣播到每個端點、本地 nonce 加上每個錢包一份的共用 nonce 檔、多筆 nonce 連續的交易同時在飛（`TxKey` = 這筆交易針對的對象；key 相同的兩筆絕不同時在飛；`exclusive_group` 的送單在同一 group 已有交易在飛時由 executor 自己拒絕；這些拒絕是有型別的 `SendRefused`，呼叫端分得出是搶輸了還是真的失敗）、被丟棄或卡住的交易用 0 元自轉帳取代、失敗冷卻。 |
+| `actor` | 作為獨立 task 的 executor：`ExecHandle` 同步讀取它的狀態，並以訊息送單；每個公告的區塊都會輪詢 receipt；已結算的交易透過 channel 回傳。規劃從不等 receipt；區塊迴圈可以用 `wait_polled` 短暫等新區塊的 receipt 查完（最多 `RECEIPT_WAIT`），讓剛上鏈的交易不再算在飛。 |
+| `gates` | 每次送單前的檢查：緊急停止檔案、revert 交易燒掉的 gas 的每日預算（在飛的交易預留它們的最壞成本直到結算：`reserve` / `release`，同時送出的多筆不會一起超過上限；已有預留的 key 會被拒絕，絕不覆蓋），以及以區塊計的期限、gas 和 L1 fee 成本（OP-stack GasPriceOracle）。 |
 | `bid` | 對抗競爭的 priority fee：`WinningBids` 記錄過去的得標者每 1 USD 毛利付了多少（依群組、在一段時間窗內）；`BidCurve` 出價略高於預測的競爭對手，但絕不超過淨利的一定比例（比例隨機會的規模增加），也絕不低於基本 priority。 |
 | `config` | 每個 bot 都會 `#[serde(flatten)]` 進自己設定的區段：`RpcSettings`（端點和存放它們 key 的 `.env`）以及 `SendSettings`（錢包、模式、keystore、廣播、緊急停止開關、nonce 檔、預算、失敗處理、`max_inflight`）。 |
 
@@ -58,6 +58,8 @@ let inflight = handle.send(request).await?;               // check gates::Gates 
 替同一個錢包簽名的每個 bot，在簽名加廣播的期間都會鎖住每個錢包一份的檔案（預設
 `~/.local/state/onchain-bots/nonce-<wallet>`），並把下一個 nonce 以 `v1 <next nonce> <unix ms>`
 的格式記在裡面。遇到不認得的格式時，bot 會拒絕送單而不是用猜的（`executor::SHARED_NONCE_VERSION`）。
+唯一的例外是先前版本留下的無版本格式（`<next nonce> <unix ms>`）：已過期的（超過 30 秒）視為空的並覆寫，
+所以升級後不必手動刪檔；仍然新鮮的代表舊版 bot 可能正在送單，一樣拒絕。
 建立在不同且互不相容版本上的 bot，不可以共用同一個錢包。
 
 ## 檢查

@@ -21,9 +21,9 @@ are built on; it knows nothing about lending protocols or arbitrage strategies.
 | `flashblocks` | Base Flashblocks: message decoding, a reconnecting reader (`run_stream`), and every flashblock in arrival order (`spawn_raw`). Nothing else depends on it (Base's "Denim" upgrade removes Flashblocks). |
 | `chain`, `num` | Multicall3 batched reads; unit conversion and full-precision mul-div. |
 | `sim` | One call simulated exactly as it would run: `eth_simulateV1` on a block plus state overrides, optionally as the next block, priced at the real fee (a sender balance override keeps nodes from refusing it), with the gas used, the L1 data fee, and an optional probe read in the same state. |
-| `executor` | Signing from an encrypted keystore (password from an env var removed after reading, or a prompt), broadcast to every endpoint over warm connections, local nonce plus a per-wallet shared nonce file, several txs in flight with consecutive nonces (`TxKey` = what a tx is about; two with the same key never fly together), dropped / stuck txs replaced by a 0-value self-transfer, failure cooldown. |
-| `actor` | The executor as its own task: `ExecHandle` reads its state synchronously and sends as messages; receipts are polled on every announced block; settled txs come back on a channel. Planning and the block loop never wait for a receipt. |
-| `gates` | The checks before every send: kill-switch file, daily budget for gas burned by reverted txs, plus deadlines in blocks, gas and L1-fee costs (OP-stack GasPriceOracle). |
+| `executor` | Signing from an encrypted keystore (password from an env var removed after reading, or a prompt), broadcast to every endpoint over warm connections, local nonce plus a per-wallet shared nonce file, several txs in flight with consecutive nonces (`TxKey` = what a tx is about; two with the same key never fly together; an `exclusive_group` send is refused by the executor itself while its group has one in flight; these refusals are a typed `SendRefused`, so callers can tell a lost race from a failure), dropped / stuck txs replaced by a 0-value self-transfer, failure cooldown. |
+| `actor` | The executor as its own task: `ExecHandle` reads its state synchronously and sends as messages; receipts are polled on every announced block; settled txs come back on a channel. Planning never waits for a receipt; a block loop may wait briefly (`wait_polled`, at most `RECEIPT_WAIT`) for a new head's receipts, so a tx included in it no longer counts as in flight. |
+| `gates` | The checks before every send: kill-switch file, daily budget for gas burned by reverted txs (txs in flight reserve their worst case until they settle, `reserve` / `release`, so sends at once cannot overrun it together; a key that already holds a reservation is refused, never overwritten), plus deadlines in blocks, gas and L1-fee costs (OP-stack GasPriceOracle). |
 | `bid` | Priority fees against competition: `WinningBids` keeps what past winners paid per USD of gross profit (per group, over a time window); `BidCurve` bids just above the predicted competitor, never more than a share of the net that grows with the size of the opportunity, never below the base priority. |
 | `config` | The config sections every bot `#[serde(flatten)]`s into its own: `RpcSettings` (endpoints and the `.env` holding their keys) and `SendSettings` (wallet, mode, keystore, broadcast, kill switch, nonce file, budget, failure policy, `max_inflight`). |
 
@@ -60,8 +60,11 @@ let inflight = handle.send(request).await?;               // check gates::Gates 
 Every bot that signs for one wallet locks one file per wallet around sign + broadcast
 (`~/.local/state/onchain-bots/nonce-<wallet>` by default) and records the next nonce in it, in the
 format `v1 <next nonce> <unix ms>`. A bot that finds a format it does not know refuses to send
-rather than guess (`executor::SHARED_NONCE_VERSION`). Bots built on different, incompatible
-versions must not share a wallet.
+rather than guess (`executor::SHARED_NONCE_VERSION`). The one exception is the unversioned
+`<next nonce> <unix ms>` of earlier releases: a stale one (older than 30 s) is treated as empty and
+overwritten, so an upgrade needs no manual cleanup; a fresh one means an older bot may be sending
+right now, and is refused like any other. Bots built on different, incompatible versions must not
+share a wallet.
 
 ## Checks
 

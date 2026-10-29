@@ -66,7 +66,8 @@ fn nonce_conflict(err: &str) -> bool {
 ///
 /// File format (one line): `v1 <next nonce> <unix ms>`. Every bot built on this crate reads and
 /// writes the same format; a line it does not recognise (another version) is never trusted: the
-/// sender then refuses to send rather than guess a nonce (see `Executor::send`).
+/// sender then refuses to send rather than guess a nonce (see `Executor::send`). The one exception
+/// is a stale line in the unversioned format of earlier releases, which is treated as empty.
 pub struct SharedNonce {
     path: std::path::PathBuf,
 }
@@ -117,11 +118,24 @@ impl SharedNonce {
         if s.is_empty() {
             return SharedEntry::None;
         }
+        let fresh = |ms: u64| now_ms.saturating_sub(ms) < SHARED_NONCE_TTL.as_millis() as u64;
         let f: Vec<&str> = s.split_whitespace().collect();
-        let (Some(SHARED_NONCE_VERSION), Some(Ok(next)), Some(Ok(ms)), None) = (f.first().copied(), f.get(1).map(|x| x.parse::<u64>()), f.get(2).map(|x| x.parse::<u64>()), f.get(3)) else {
-            return SharedEntry::Unknown;
-        };
-        if now_ms.saturating_sub(ms) < SHARED_NONCE_TTL.as_millis() as u64 { SharedEntry::Next(next) } else { SharedEntry::None }
+        let num = |i: usize| f.get(i).and_then(|x| x.parse::<u64>().ok());
+        match (f.first().copied(), f.len()) {
+            (Some(SHARED_NONCE_VERSION), 3) => match (num(1), num(2)) {
+                (Some(next), Some(ms)) if fresh(ms) => SharedEntry::Next(next),
+                (Some(_), Some(_)) => SharedEntry::None,
+                _ => SharedEntry::Unknown,
+            },
+            // The unversioned `<next> <unix ms>` of earlier releases: a stale entry says nothing
+            // about a tx in flight and is overwritten; a fresh one means an older bot may be
+            // sending right now, so it is not trusted.
+            (_, 2) => match (num(0), num(1)) {
+                (Some(_), Some(ms)) if !fresh(ms) => SharedEntry::None,
+                _ => SharedEntry::Unknown,
+            },
+            _ => SharedEntry::Unknown,
+        }
     }
 
     fn write(f: &mut std::fs::File, next: u64) {
@@ -348,9 +362,36 @@ pub struct SendRequest {
     pub base_fee_wei: u128,
     pub priority_fee_wei: u128,
     pub key: TxKey,
+    /// Refuse while another tx of `key.group` is in flight. Checked by the executor itself, so two
+    /// callers racing for one group (each having checked `is_group_inflight` first) cannot both send.
+    pub exclusive_group: bool,
     pub block: u64,
     pub deadline_block: u64,
 }
+
+/// A send the executor refused before signing anything: the in-flight rules or the cooldown, not a
+/// failure (callers racing for one key or group meet these as a matter of course). Recognise it
+/// with `err.downcast_ref::<SendRefused>()`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SendRefused {
+    Halted { consecutive_failures: u32 },
+    MaxInflight(usize),
+    KeyInflight,
+    GroupInflight,
+}
+
+impl std::fmt::Display for SendRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SendRefused::Halted { consecutive_failures } => write!(f, "executor halted after {consecutive_failures} consecutive failures"),
+            SendRefused::MaxInflight(n) => write!(f, "{n} transaction(s) already in flight (max_inflight)"),
+            SendRefused::KeyInflight => write!(f, "a transaction with this key is already in flight"),
+            SendRefused::GroupInflight => write!(f, "a transaction of this group is already in flight"),
+        }
+    }
+}
+
+impl std::error::Error for SendRefused {}
 
 /// When sending pauses: `max_in_window` failed (reverted) or dropped txs within `window` pause it
 /// for `cooldown`, after which it resumes by itself. Losing a race is normal for both bots, so a
@@ -555,17 +596,21 @@ impl<P: Provider> Executor<P> {
         Ok(self.provider.get_balance(self.address).await?)
     }
 
-    /// Signs and broadcasts one tx. Refuses when halted, at max_inflight, or when a tx with the
-    /// same key is already in flight.
+    /// Signs and broadcasts one tx. Refuses (`SendRefused`, nothing signed) when halted, at
+    /// max_inflight, when a tx with the same key is already in flight, or (`exclusive_group`) one
+    /// of the same group.
     pub async fn send(&mut self, r: SendRequest) -> Result<Inflight> {
         if self.halted() {
-            bail!("executor halted after {} consecutive failures", self.consecutive_failures);
+            return Err(SendRefused::Halted { consecutive_failures: self.consecutive_failures }.into());
         }
         if self.inflight.len() >= self.max_inflight {
-            bail!("{} transaction(s) already in flight (max_inflight)", self.inflight.len());
+            return Err(SendRefused::MaxInflight(self.inflight.len()).into());
         }
         if self.is_inflight(r.key) {
-            bail!("a transaction with this key is already in flight");
+            return Err(SendRefused::KeyInflight.into());
+        }
+        if r.exclusive_group && self.is_group_inflight(r.key.group) {
+            return Err(SendRefused::GroupInflight.into());
         }
         // Held from here until the broadcast is done: the other process waits for it.
         let mut lock = match &self.shared {
@@ -713,7 +758,12 @@ impl<P: Provider> Executor<P> {
         if dropped_from.is_some() {
             let dropped: Vec<Inflight> = out.iter().filter(|(_, o)| matches!(o, Outcome::Dropped)).map(|(i, _)| i.clone()).collect();
             self.cancel_stuck(&dropped).await;
-            self.sync_nonce().await?;
+            // The outcomes above are already out of `inflight`: a failed resync must not lose them.
+            // The next send resyncs instead.
+            if let Err(e) = self.sync_nonce().await {
+                warn!(error = %e, "nonce resync after a dropped tx failed; the next send resyncs");
+                self.nonce = None;
+            }
         }
         // A settled tx is no longer reserved by `spendable`: read the balance it left now, not at
         // the next background reading.
@@ -808,10 +858,13 @@ mod tests {
         assert_eq!(SharedNonce::parse("v1 7 999999000", now), SharedEntry::Next(7));
         assert_eq!(SharedNonce::parse("", now), SharedEntry::None);
         assert_eq!(SharedNonce::parse("v1 7 1", now), SharedEntry::None, "stale");
-        // The pre-versioned format and anything else are unknown, never read as a nonce.
-        for s in ["7 999999000", "v2 7 999999000", "v1 x 999999000", "v1 7 999999000 extra"] {
+        // A fresh entry in the pre-versioned format and anything else are unknown, never read as a
+        // nonce.
+        for s in ["7 999999000", "v2 7 999999000", "v1 x 999999000", "v1 7 999999000 extra", "x 1"] {
             assert_eq!(SharedNonce::parse(s, now), SharedEntry::Unknown, "{s}");
         }
+        // A stale one, left by an earlier release, does not block sending after an upgrade.
+        assert_eq!(SharedNonce::parse("7 1", now), SharedEntry::None);
     }
 
     /// Two processes (this test binary started twice) take turns on one shared nonce file: each
