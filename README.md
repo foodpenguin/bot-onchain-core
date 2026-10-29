@@ -44,6 +44,8 @@ both), override the dependency from the framework's `bot/` directory:
 cargo test --config 'patch."https://github.com/foodpenguin/bot-onchain-core".onchain-core.path="../../bot-onchain-core"'
 ```
 
+The override rewrites `bot/Cargo.lock`; do not commit that change.
+
 A minimal sender:
 
 ```rust

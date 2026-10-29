@@ -42,6 +42,8 @@ onchain-core = { git = "https://github.com/foodpenguin/bot-onchain-core", tag = 
 cargo test --config 'patch."https://github.com/foodpenguin/bot-onchain-core".onchain-core.path="../../bot-onchain-core"'
 ```
 
+覆寫會改動 `bot/Cargo.lock`，這個變更不要 commit。
+
 最小的送單範例：
 
 ```rust
