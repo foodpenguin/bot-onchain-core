@@ -34,7 +34,7 @@ Depend on a tagged release (the frameworks pin one the same way):
 
 ```toml
 [dependencies]
-onchain-core = { git = "https://github.com/foodpenguin/bot-onchain-core", tag = "v0.1.0" }
+onchain-core = { git = "https://github.com/foodpenguin/bot-onchain-core", tag = "v0.1.1" }
 ```
 
 To build a framework against a local checkout of this repository instead (e.g. while changing

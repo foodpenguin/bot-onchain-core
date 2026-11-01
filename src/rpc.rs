@@ -65,8 +65,9 @@ struct Endpoint {
     /// answer from a load-balanced provider may come from a single odd backend).
     learned: Mutex<HashMap<String, Instant>>,
     max_log_blocks: Option<u64>,
-    /// Attempts per JSON-RPC method (incl. failovers and hedges: what the provider bills).
-    calls: Mutex<HashMap<String, u64>>,
+    /// Attempts per JSON-RPC method (incl. failovers and hedges: what the provider bills) and the
+    /// request bytes they sent (egress, what a cloud host bills).
+    calls: Mutex<HashMap<String, (u64, u64)>>,
 }
 
 impl Endpoint {
@@ -272,8 +273,21 @@ impl RpcPool {
     pub fn method_report(&self) -> Vec<(String, String, u64)> {
         let mut out = vec![];
         for e in self.endpoints.iter() {
-            for (m, n) in e.calls.lock().unwrap().iter() {
+            for (m, (n, _)) in e.calls.lock().unwrap().iter() {
                 out.push((e.name.clone(), m.clone(), *n));
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// (endpoint, method, attempts, request bytes sent) since start, for egress accounting. WebSocket
+    /// subscriptions and raw-tx broadcasts do not go through the pool and are not counted.
+    pub fn method_bytes_report(&self) -> Vec<(String, String, u64, u64)> {
+        let mut out = vec![];
+        for e in self.endpoints.iter() {
+            for (m, (n, b)) in e.calls.lock().unwrap().iter() {
+                out.push((e.name.clone(), m.clone(), *n, *b));
             }
         }
         out.sort();
@@ -309,8 +323,10 @@ impl RpcPool {
         e.in_flight.fetch_add(1, Ordering::Relaxed);
         {
             let mut calls = e.calls.lock().unwrap();
-            for m in req.method_names() {
-                *calls.entry(m.to_string()).or_default() += 1;
+            for r in requests(&req) {
+                let c = calls.entry(r.method().to_string()).or_default();
+                c.0 += 1;
+                c.1 += r.serialized().get().len() as u64;
             }
         }
         let _guard = InFlight(&e.in_flight);
@@ -704,6 +720,24 @@ mod tests {
         // The cancelled slow attempt must not leak in-flight load.
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(pool.endpoints[0].in_flight.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn request_bytes_are_counted_per_method() {
+        let url = mock_rpc(Duration::ZERO, "0x1").await;
+        let pool = RpcPool::new(vec![EndpointSpec { name: "mock".into(), url, priority: 0, skip_methods: vec![], max_log_blocks: None }]).unwrap();
+        use alloy::providers::{Provider, ProviderBuilder};
+        let provider = ProviderBuilder::new().connect_client(alloy::rpc::client::RpcClient::new(pool.clone(), false));
+        for _ in 0..3 {
+            provider.get_block_number().await.unwrap();
+        }
+        let r = pool.method_bytes_report();
+        assert_eq!(r.len(), 1);
+        let (e, m, n, bytes) = &r[0];
+        assert_eq!((e.as_str(), m.as_str(), *n), ("mock", "eth_blockNumber", 3));
+        // {"method":"eth_blockNumber","params":[],"id":N,"jsonrpc":"2.0"}: about 60 bytes each.
+        assert!((150..250).contains(bytes), "{bytes} request bytes");
+        assert_eq!(pool.method_report(), vec![("mock".to_string(), "eth_blockNumber".to_string(), 3)]);
     }
 
     #[tokio::test]
