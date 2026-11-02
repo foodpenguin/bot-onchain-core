@@ -34,11 +34,13 @@ pub fn kill_switch_on(path: &str) -> bool {
 /// Gas burned by failed (reverted) txs per UTC day. Successful sends are not charged: they paid for
 /// their own gas, and charging them would block profitable sends on a busy day. Txs in flight
 /// hold a reservation of their worst case until they settle, so several sends at once cannot
-/// each fit the cap alone and overrun it together.
-#[derive(Debug, Default, Clone)]
+/// each fit the cap alone and overrun it together. Serializes the day and its spend only (a bot persists them
+/// across restarts); reservations belong to the txs of the running process.
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DailyBudget {
     day: u64,
     spent_usd: f64,
+    #[serde(skip)]
     reserved: HashMap<TxKey, f64>,
 }
 
@@ -181,6 +183,18 @@ pub async fn l1_fee_wei<P: Provider>(p: &P, calldata_len: usize) -> Result<U256>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn daily_budget_round_trips_its_spend_without_reservations() {
+        let mut b = DailyBudget::default();
+        b.charge(86_400 * 3 + 5, 1.25);
+        let key = TxKey { group: 1, id: alloy::primitives::B256::repeat_byte(7) };
+        b.reserve(key, 86_400 * 3 + 6, 0.5, 5.0).unwrap();
+        let back: DailyBudget = serde_json::from_str(&serde_json::to_string(&b).unwrap()).unwrap();
+        assert_eq!(back.day, 3);
+        assert_eq!(back.spent_usd, 1.25);
+        assert_eq!(back.reserved_usd(), 0.0, "reservations are not persisted");
+    }
 
     #[test]
     fn daily_budget_caps_failed_spend_and_resets_at_utc_midnight() {

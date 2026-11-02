@@ -33,7 +33,7 @@ priority fee 出價。crate 名稱是 `onchain-core`；[Debt-keeper](https://git
 
 ```toml
 [dependencies]
-onchain-core = { git = "https://github.com/foodpenguin/bot-onchain-core", tag = "v0.1.0" }
+onchain-core = { git = "https://github.com/foodpenguin/bot-onchain-core", tag = "v0.1.1" }
 ```
 
 要讓框架改用本機 checkout 的這個 repo 編譯（例如兩邊同時在改），在框架的 `bot/` 目錄覆寫依賴：

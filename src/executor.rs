@@ -16,7 +16,7 @@ use std::{
     collections::VecDeque,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -468,6 +468,26 @@ pub const DROP_GRACE_BLOCKS: u64 = 2;
 /// How often spawn_nonce_watch reads the pending nonce.
 pub const NONCE_WATCH_EVERY: Duration = Duration::from_secs(10);
 
+/// Set once a node refused a "pending" nonce read: from then on the latest nonce is read.
+static PENDING_NONCE_REFUSED: AtomicBool = AtomicBool::new(false);
+
+/// The account's next nonce: the "pending" count, or the latest one where the node refuses the
+/// "pending" tag (Base Denim drops pending state: <https://docs.base.org/upgrades/denim/migrate-from-flashblocks>).
+/// The local nonce covers this process's own txs in flight either way (`Executor::send`).
+pub async fn account_nonce<P: Provider>(p: &P, address: Address) -> alloy::transports::TransportResult<u64> {
+    if !PENDING_NONCE_REFUSED.load(Ordering::Relaxed) {
+        match p.get_transaction_count(address).pending().await {
+            Ok(n) => return Ok(n),
+            Err(e) => {
+                if !PENDING_NONCE_REFUSED.swap(true, Ordering::Relaxed) {
+                    warn!(error = %e, "pending nonce read refused: reading the latest nonce from now on");
+                }
+            }
+        }
+    }
+    p.get_transaction_count(address).await
+}
+
 impl<P: Provider + Clone + Send + Sync + 'static> Executor<P> {
     /// Reads the hot wallet's pending nonce and balance every `every` in the background, so that
     /// `send` never starts from a nonce another process (a manual transfer, another sender) already
@@ -479,7 +499,7 @@ impl<P: Provider + Clone + Send + Sync + 'static> Executor<P> {
             t.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 t.tick().await;
-                let (n, b) = tokio::join!(p.get_transaction_count(address).pending(), p.get_balance(address));
+                let (n, b) = tokio::join!(account_nonce(&p, address), p.get_balance(address));
                 if let Ok(n) = n {
                     // The latest reading, not a running max: a dropped tx lowers the pending nonce again.
                     slot.store(n, Ordering::Relaxed);
@@ -558,7 +578,7 @@ impl<P: Provider> Executor<P> {
     }
 
     pub async fn sync_nonce(&mut self) -> Result<u64> {
-        let n = self.provider.get_transaction_count(self.address).pending().await?;
+        let n = account_nonce(&self.provider, self.address).await?;
         self.nonce = Some(n);
         // Fresher than the watcher's reading, which can still count a tx that was since dropped.
         self.chain_nonce.store(n, Ordering::Relaxed);
@@ -805,6 +825,20 @@ impl<P: Provider> Executor<P> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_refused_pending_nonce_falls_back_to_latest() {
+        let asserter = alloy::providers::mock::Asserter::new();
+        let p = alloy::providers::ProviderBuilder::new().connect_mocked_client(asserter.clone());
+        let a = Address::repeat_byte(1);
+        // The node refuses "pending" (Denim): the latest count answers, and keeps answering.
+        asserter.push_failure_msg("pending block is not available");
+        asserter.push_success(&"0x5");
+        assert_eq!(account_nonce(&p, a).await.unwrap(), 5);
+        asserter.push_success(&"0x6");
+        assert_eq!(account_nonce(&p, a).await.unwrap(), 6, "no second pending attempt");
+        assert!(asserter.read_q().is_empty());
+    }
 
     #[test]
     fn nonce_errors_are_recognised_across_endpoints() {
