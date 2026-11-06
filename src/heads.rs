@@ -14,8 +14,16 @@ use futures::StreamExt;
 use tokio::sync::watch;
 use tracing::{info, warn};
 
-/// No head for this long (3 Base blocks) = the socket is dead, whatever it claims.
+/// No head for this long = the socket is dead, whatever it claims (3 blocks at 2 s; ~30 at 200 ms).
 const WS_STALL: Duration = Duration::from_secs(6);
+
+/// WebSocket reconnect backoff: exponential from `MIN` to `MAX`. An endpoint that fails more than
+/// `MAX_RECONNECTS_PER_HOUR` is parked for `PARK` (one WARN) so a dead free-tier socket cannot spin
+/// a reconnect/error storm.
+const RECONNECT_MIN: Duration = Duration::from_secs(1);
+const RECONNECT_MAX: Duration = Duration::from_secs(60);
+const RECONNECT_PARK: Duration = Duration::from_secs(300);
+const MAX_RECONNECTS_PER_HOUR: usize = 20;
 
 /// Source index used for heads that came from HTTP polling.
 pub const SOURCE_HTTP: usize = usize::MAX;
@@ -50,7 +58,11 @@ pub fn spawn_ws_many(endpoints: Vec<(String, String)>) -> watch::Receiver<Option
     for (source, (name, url)) in endpoints.into_iter().enumerate() {
         let tx = tx.clone();
         tokio::spawn(async move {
-            let mut backoff = Duration::from_millis(500);
+            let mut backoff = RECONNECT_MIN;
+            // Failures in the last hour: an endpoint that flaps constantly (e.g. drpc's free WS after
+            // Denim) is parked for RECONNECT_PARK so it stops hammering reconnects (and alloy stops
+            // logging an error per attempt), with one WARN instead of thousands.
+            let mut fails: std::collections::VecDeque<Instant> = std::collections::VecDeque::new();
             loop {
                 let started = Instant::now();
                 match subscribe(&name, &url, source, &tx).await {
@@ -62,12 +74,25 @@ pub fn spawn_ws_many(endpoints: Vec<(String, String)>) -> watch::Receiver<Option
                 if tx.is_closed() {
                     return;
                 }
-                // A connection that lived a while was healthy: start the next one from a short backoff.
+                // A connection that lived a while was healthy: reset the backoff and the window.
                 if started.elapsed() > Duration::from_secs(60) {
-                    backoff = Duration::from_millis(500);
+                    backoff = RECONNECT_MIN;
+                    fails.clear();
                 }
-                tokio::time::sleep(backoff).await;
-                backoff = (backoff * 2).min(Duration::from_secs(10));
+                let now = Instant::now();
+                fails.push_back(now);
+                while fails.front().is_some_and(|t| now.duration_since(*t) > Duration::from_secs(3600)) {
+                    fails.pop_front();
+                }
+                let wait = if fails.len() > MAX_RECONNECTS_PER_HOUR {
+                    warn!(endpoint = %name, fails = fails.len(), park_s = RECONNECT_PARK.as_secs(), "ws endpoint failing repeatedly; parking it");
+                    fails.clear();
+                    RECONNECT_PARK
+                } else {
+                    backoff
+                };
+                tokio::time::sleep(wait).await;
+                backoff = (backoff * 2).min(RECONNECT_MAX);
             }
         });
     }
