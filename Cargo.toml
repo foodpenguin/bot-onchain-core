@@ -1,6 +1,6 @@
 [package]
 name = "onchain-core"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 description = "Shared plumbing for on-chain bots: RPC pool, head and Flashblocks streams, eth_simulateV1, keystore signing, broadcast, shared nonce, executor actor, send gates"
 license = "AGPL-3.0-or-later"
