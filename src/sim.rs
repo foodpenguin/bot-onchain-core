@@ -66,6 +66,12 @@ pub struct Probe {
     pub data: Bytes,
 }
 
+/// The revert data of a failed `eth_simulateV1` call. Geth-style nodes return `returnData: "0x"` on a
+/// revert and put the data in `error.data`, so the first non-empty of the two wins.
+fn revert_data(c: &serde_json::Value) -> &str {
+    [&c["error"]["data"], &c["returnData"]].into_iter().filter_map(|v| v.as_str()).find(|s| !s.is_empty() && *s != "0x").unwrap_or("0x")
+}
+
 /// Runs `calldata` from `from` to `to` on top of `block`'s state plus `ov` with eth_simulateV1, as
 /// the next block when `at` is given, and returns what it returned with the gas actually used and
 /// the L1 fee of its calldata. A revert is a `SimReverted` error.
@@ -120,7 +126,7 @@ pub async fn simulate_call<P: Provider>(p: &P, from: Address, to: Address, calld
     let c = &r[0]["calls"][idx];
     if c["status"].as_str() != Some("0x1") {
         let msg = c["error"]["message"].as_str().unwrap_or("reverted");
-        let data = c["returnData"].as_str().or_else(|| c["error"]["data"].as_str()).unwrap_or("");
+        let data = revert_data(c);
         return Err(SimReverted { message: format!("{msg} {data}"), block_number, probe }.into());
     }
     let return_data: Bytes = c["returnData"].as_str().context("simulateV1: no returnData")?.parse()?;
@@ -146,4 +152,21 @@ pub async fn l1_fee_at<P: Provider>(p: &P, calldata_len: usize, block: BlockId) 
     let tx = TransactionRequest::default().with_to(GAS_PRICE_ORACLE).with_input(l1_fee_call(calldata_len));
     let out = p.call(tx).block(block).await?;
     Ok(IGasPriceOracle::getL1FeeUpperBoundCall::abi_decode_returns(&out)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn revert_data_prefers_the_non_empty_field() {
+        // Geth-style: empty returnData, the data in error.data (2026-11-08: the batch op's wrapped
+        // "transferFrom reverted" was journaled as a bare "0x").
+        let geth = serde_json::json!({ "status": "0x0", "returnData": "0x", "error": { "code": 3, "message": "execution reverted", "data": "0x5c0dee5d" } });
+        assert_eq!(revert_data(&geth), "0x5c0dee5d");
+        let in_return = serde_json::json!({ "status": "0x0", "returnData": "0x08c379a0", "error": { "message": "execution reverted" } });
+        assert_eq!(revert_data(&in_return), "0x08c379a0");
+        let none = serde_json::json!({ "status": "0x0", "returnData": "0x", "error": { "message": "out of gas" } });
+        assert_eq!(revert_data(&none), "0x");
+    }
 }
