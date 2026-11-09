@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.3 (2026-11-09)
+
+Compatible with v0.1.2: no renames, no removed items.
+
+- `sim::simulate_call`: a revert reports the call's `error.data` when `returnData` is empty. Geth-style
+  `eth_simulateV1` returns `returnData: "0x"` on a revert and carries the revert data in
+  `error.data`, so `SimReverted` used to read just "execution reverted 0x".
+
 ## v0.1.2 (2026-11-06)
 
 Compatible with v0.1.1: no renames, no removed items.
