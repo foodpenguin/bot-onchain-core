@@ -343,6 +343,9 @@ pub struct Inflight {
     pub gas_limit: u64,
     pub max_fee_wei: u128,
     pub priority_fee_wei: u128,
+    /// ETH attached (`send_with_value`); spoken for until the tx settles. Not serialized when 0.
+    #[serde(skip_serializing_if = "U256::is_zero")]
+    pub value: U256,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -684,6 +687,7 @@ impl<P: Provider> Executor<P> {
                     gas_limit: r.gas_limit,
                     max_fee_wei: max_fee,
                     priority_fee_wei: r.priority_fee_wei,
+                    value,
                 };
                 self.inflight.push(inflight.clone());
                 Ok(inflight)

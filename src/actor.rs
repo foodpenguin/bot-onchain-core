@@ -54,12 +54,12 @@ impl ExecView {
     pub fn is_group_inflight(&self, group: u64) -> bool {
         self.inflight.iter().any(|i| i.key.group == group)
     }
-    /// The last balance reading minus what the txs in flight may still burn at most (None = no
-    /// reading yet).
+    /// The last balance reading minus what the txs in flight may still take at most: their gas at
+    /// its max fee plus any ETH they carry (None = no reading yet).
     pub fn spendable(&self) -> Option<U256> {
         let b = (*self.balance.lock().unwrap())?;
-        let reserved: u128 = self.inflight.iter().map(|i| i.gas_limit as u128 * i.max_fee_wei).sum();
-        Some(b.saturating_sub(U256::from(reserved)))
+        let reserved = self.inflight.iter().fold(U256::ZERO, |acc, i| acc + U256::from(i.gas_limit as u128 * i.max_fee_wei) + i.value);
+        Some(b.saturating_sub(reserved))
     }
 }
 
@@ -197,6 +197,24 @@ mod tests {
 
     use super::*;
     use crate::executor::{Broadcaster, FailurePolicy, MinProfitSlot, Payload};
+
+    #[test]
+    fn spendable_reserves_the_value_of_txs_in_flight() {
+        let tx = |gas_limit: u64, max_fee_wei: u128, value: u64| Inflight {
+            hash: B256::ZERO,
+            key: TxKey::new(1, B256::ZERO),
+            nonce: 0,
+            sent_block: 0,
+            deadline_block: 0,
+            gas_limit,
+            max_fee_wei,
+            priority_fee_wei: 0,
+            value: U256::from(value),
+        };
+        let v = ExecView { address: Address::ZERO, inflight: vec![tx(10, 2, 0), tx(5, 1, 1_000)], max_inflight: 2, polled_block: 0, cool_until: None, balance: Arc::new(Mutex::new(Some(U256::from(10_000u64)))) };
+        // 10 000 - (10 x 2 + 5 x 1) gas - 1 000 of ETH sent along.
+        assert_eq!(v.spendable(), Some(U256::from(8_975u64)));
+    }
 
     #[tokio::test]
     #[ignore = "needs anvil on PATH; run with --ignored"]

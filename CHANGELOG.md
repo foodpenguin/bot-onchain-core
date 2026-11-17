@@ -7,6 +7,9 @@ Compatible with v0.1.4: no renames, no removed items.
 - `Executor::send_with_value` / `ExecHandle::send_with_value`: a send with ETH attached (e.g. moving
   ETH the wallet received on to another address), with the same checks, nonce handling and in-flight
   tracking as `send` (which is now `send_with_value` with zero value).
+- `Inflight.value`: the ETH a tx in flight carries (serialized only when non-zero), reserved by
+  `ExecView::spendable` / `ExecHandle::spendable` along with its worst-case gas until it settles.
+  `Inflight` is only built by the executor, so code that reads it is unaffected.
 
 ## v0.1.4 (2026-11-17)
 
