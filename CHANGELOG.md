@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.1.5 (unreleased)
+## v0.1.5 (2026-11-17)
 
 Compatible with v0.1.4: no renames, no removed items.
 
