@@ -114,6 +114,10 @@ pub struct RpcPool {
     endpoints: Arc<Vec<Endpoint>>,
     /// Per-attempt timeout (then the next endpoint is tried).
     timeout: Duration,
+    /// JSON-RPC methods hedged to a second endpoint immediately (not after ~2x the first endpoint's
+    /// latency): for a latency-critical call where a duplicate request is worth racing, e.g. the
+    /// Atlas valuation's `eth_simulateV1` (the first endpoint often lags a block).
+    eager_hedge: Arc<std::collections::HashSet<String>>,
 }
 
 #[derive(Clone)]
@@ -194,7 +198,15 @@ impl RpcPool {
                 Ok(Endpoint { name: s.name, priority: s.priority, transport: Http::with_client(http.clone(), url), stats: Mutex::default(), in_flight: AtomicUsize::new(0), skip: s.skip_methods.into_iter().collect(), learned: Mutex::default(), max_log_blocks: s.max_log_blocks, calls: Mutex::default() })
             })
             .collect::<Result<Vec<_>>>()?;
-        Ok(Self { endpoints: Arc::new(endpoints), timeout })
+        Ok(Self { endpoints: Arc::new(endpoints), timeout, eager_hedge: Arc::new(std::collections::HashSet::new()) })
+    }
+
+    /// Hedge these JSON-RPC methods immediately (send a duplicate to the next same-tier endpoint at
+    /// once, first answer wins) instead of after a latency-based delay. For a latency-critical pool
+    /// such as the Atlas valuations' `eth_simulateV1`.
+    pub fn with_eager_hedge(mut self, methods: impl IntoIterator<Item = String>) -> Self {
+        self.eager_hedge = Arc::new(methods.into_iter().collect());
+        self
     }
 
     /// Endpoint indices in the order to try: healthy first, then priority tier, then
@@ -368,7 +380,10 @@ impl RpcPool {
         pending.push(self.attempt(order[0], req.clone()));
         let mut next = 1;
         let mut hedged = false;
-        let hedge_timer = tokio::time::sleep(self.hedge_delay(order[0]));
+        // Eager-hedge methods race a second endpoint from the start; others wait ~2x the first
+        // endpoint's usual latency before hedging.
+        let eager = req.method_names().any(|m| self.eager_hedge.contains(m));
+        let hedge_timer = tokio::time::sleep(if eager { Duration::ZERO } else { self.hedge_delay(order[0]) });
         tokio::pin!(hedge_timer);
         let (mut last_resp, mut last_err) = (None, None);
         loop {
@@ -720,6 +735,29 @@ mod tests {
         // The cancelled slow attempt must not leak in-flight load.
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(pool.endpoints[0].in_flight.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn eager_hedge_fires_immediately() {
+        let slow = mock_rpc(Duration::from_millis(2000), "0x1").await;
+        let fast = mock_rpc(Duration::from_millis(20), "0x2").await;
+        let pool = RpcPool::new(vec![
+            EndpointSpec { name: "slow".into(), url: slow, priority: 0, skip_methods: vec![], max_log_blocks: None },
+            EndpointSpec { name: "fast".into(), url: fast, priority: 0, skip_methods: vec![], max_log_blocks: None },
+        ])
+        .unwrap()
+        .with_eager_hedge(["eth_blockNumber".to_string()]);
+        // slow has the lower ewma so it is tried first; without the eager hedge the pool would wait
+        // ~1 s (2x ewma) before trying fast.
+        pool.record_success(0, Duration::from_millis(500));
+        pool.record_success(1, Duration::from_millis(600));
+        use alloy::providers::{Provider, ProviderBuilder};
+        let provider = ProviderBuilder::new().connect_client(alloy::rpc::client::RpcClient::new(pool.clone(), false));
+        let t = Instant::now();
+        let n = provider.get_block_number().await.unwrap();
+        assert_eq!(n, 2, "the immediately-hedged fast endpoint wins");
+        assert!(t.elapsed() < Duration::from_millis(400), "eager hedge must not wait ~1 s: {:?}", t.elapsed());
+        assert_eq!(pool.report()[1].hedges, 1);
     }
 
     #[tokio::test]
