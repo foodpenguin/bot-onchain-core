@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.1.4 (2026-11-17)
+
+Compatible with v0.1.3: no renames, no removed items.
+
+- `RpcPool::with_eager_hedge(methods, max_in_flight)`: these JSON-RPC methods are hedged to a second
+  same-tier endpoint immediately (first answer wins) instead of after ~2x the first endpoint's
+  latency, for a latency-critical call worth racing a duplicate — e.g. the Atlas valuation's
+  `eth_simulateV1`, where the first endpoint often lags a block. At most `max_in_flight` such
+  requests are eagerly hedged at once (0 = off); past it they hedge after the usual delay, so a
+  burst does not double the pool's load when it is busiest.
+
 ## v0.1.3 (2026-11-09)
 
 Compatible with v0.1.2: no renames, no removed items.
