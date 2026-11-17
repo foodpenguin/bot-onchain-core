@@ -605,6 +605,12 @@ impl<P: Provider> Executor<P> {
     /// max_inflight, when a tx with the same key is already in flight, or (`exclusive_group`) one
     /// of the same group.
     pub async fn send(&mut self, r: SendRequest) -> Result<Inflight> {
+        self.send_with_value(r, U256::ZERO).await
+    }
+
+    /// `send` with `value` wei attached (e.g. moving ETH the wallet received to another address):
+    /// the same checks, nonce handling and in-flight tracking as any other send from this wallet.
+    pub async fn send_with_value(&mut self, r: SendRequest, value: U256) -> Result<Inflight> {
         if self.halted() {
             return Err(SendRefused::Halted { consecutive_failures: self.consecutive_failures }.into());
         }
@@ -644,7 +650,7 @@ impl<P: Provider> Executor<P> {
         let calldata = patch_min_profit(&r.payload.calldata, r.payload.min_profit, r.min_profit)?;
         // Room for the base fee to double before inclusion; the priority fee is what we bid.
         let max_fee = r.base_fee_wei * 2 + r.priority_fee_wei;
-        let mut sent = self.sign_and_send(&r, &calldata, nonce, max_fee).await;
+        let mut sent = self.sign_and_send(&r, &calldata, value, nonce, max_fee).await;
         // Still stale (it moved within the last watch interval): resync and resend once, now,
         // rather than lose the opportunity.
         if let Err(e) = &sent
@@ -660,7 +666,7 @@ impl<P: Provider> Executor<P> {
             if fresh > nonce {
                 warn!(stale = nonce, fresh, "nonce was stale (hot wallet used elsewhere); resending");
                 nonce = fresh;
-                sent = self.sign_and_send(&r, &calldata, nonce, max_fee).await;
+                sent = self.sign_and_send(&r, &calldata, value, nonce, max_fee).await;
             }
         }
         match sent {
@@ -690,11 +696,12 @@ impl<P: Provider> Executor<P> {
         }
     }
 
-    async fn sign_and_send(&self, r: &SendRequest, calldata: &Bytes, nonce: u64, max_fee: u128) -> Result<B256> {
+    async fn sign_and_send(&self, r: &SendRequest, calldata: &Bytes, value: U256, nonce: u64, max_fee: u128) -> Result<B256> {
         let tx = TransactionRequest::default()
             .with_from(self.address)
             .with_to(r.payload.to)
             .with_input(calldata.clone())
+            .with_value(value)
             .with_nonce(nonce)
             .with_chain_id(self.chain_id)
             .with_gas_limit(r.gas_limit)

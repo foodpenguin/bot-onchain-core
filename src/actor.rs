@@ -73,7 +73,7 @@ pub struct Settled {
 }
 
 enum Cmd {
-    Send(SendRequest, oneshot::Sender<Result<Inflight>>),
+    Send(SendRequest, U256, oneshot::Sender<Result<Inflight>>),
 }
 
 /// Sends to, and reads the state of, the executor task. Clone it freely.
@@ -117,8 +117,13 @@ impl ExecHandle {
     /// Signs and broadcasts `r` (the executor's own checks apply: cooldown, max_inflight, same
     /// key in flight, the shared nonce lock). Returns once an endpoint accepted it.
     pub async fn send(&self, r: SendRequest) -> Result<Inflight> {
+        self.send_with_value(r, U256::ZERO).await
+    }
+
+    /// `send` with `value` wei attached (Executor::send_with_value).
+    pub async fn send_with_value(&self, r: SendRequest, value: U256) -> Result<Inflight> {
         let (tx, rx) = oneshot::channel();
-        self.cmd.send(Cmd::Send(r, tx)).await.map_err(|_| anyhow!("executor task stopped"))?;
+        self.cmd.send(Cmd::Send(r, value, tx)).await.map_err(|_| anyhow!("executor task stopped"))?;
         rx.await.map_err(|_| anyhow!("executor task stopped"))?
     }
 }
@@ -139,8 +144,8 @@ pub fn spawn<P: Provider + Send + Sync + 'static>(mut exec: Executor<P>, mut blo
                 // Sends first: a waiting send is an opportunity, a receipt can wait a moment.
                 biased;
                 c = cmd_rx.recv(), if cmds_open => match c {
-                    Some(Cmd::Send(r, reply)) => {
-                        let res = exec.send(r).await;
+                    Some(Cmd::Send(r, value, reply)) => {
+                        let res = exec.send_with_value(r, value).await;
                         // The view first: a caller that reads it right after its send sees the tx.
                         view_tx.send_replace(view_of(&exec, polled));
                         let _ = reply.send(res);
@@ -249,5 +254,41 @@ mod tests {
         }
         got.sort();
         assert_eq!(got, vec![B256::with_last_byte(1), B256::with_last_byte(2), B256::with_last_byte(3)]);
+    }
+
+    #[tokio::test]
+    #[ignore = "needs anvil on PATH; run with --ignored"]
+    async fn a_send_can_carry_value() {
+        let anvil = Anvil::new().arg("--no-mining").spawn();
+        let url = anvil.endpoint_url();
+        let p = ProviderBuilder::new().connect_http(url.clone());
+        let signer: PrivateKeySigner = anvil.keys()[0].clone().into();
+        let to = alloy::primitives::Address::repeat_byte(0x42);
+        let bcast = Broadcaster::new(reqwest::Client::new(), vec![("anvil".into(), url.to_string())]);
+        let policy = FailurePolicy { max_in_window: 9, window: std::time::Duration::from_secs(60), cooldown: std::time::Duration::from_secs(60) };
+        let exec = Executor::new(p.clone(), signer, anvil.chain_id(), bcast, policy);
+        let (blocks_tx, blocks) = watch::channel(0u64);
+        let (h, mut settled) = spawn(exec, blocks);
+        let base_fee = p.get_block_by_number(alloy::eips::BlockNumberOrTag::Latest).await.unwrap().unwrap().header.base_fee_per_gas.unwrap_or(1) as u128;
+        // A plain ETH transfer: no calldata, nothing to patch.
+        let req = SendRequest {
+            payload: Payload { to, calldata: Bytes::new(), min_profit: MinProfitSlot { offset: 0, width: 0 } },
+            min_profit: U256::ZERO,
+            gas_limit: 21_000,
+            base_fee_wei: base_fee,
+            priority_fee_wei: 1_000_000,
+            key: TxKey::new(9, B256::with_last_byte(1)),
+            exclusive_group: true,
+            block: 0,
+            deadline_block: 100,
+        };
+        let value = U256::from(123_456_789u64);
+        h.send_with_value(req, value).await.unwrap();
+        p.anvil_mine(Some(1), None).await.unwrap();
+        let mined = p.get_block_number().await.unwrap();
+        blocks_tx.send_replace(mined);
+        let s = tokio::time::timeout(std::time::Duration::from_secs(10), settled.recv()).await.expect("settled in time").unwrap();
+        assert!(matches!(s.outcome, Outcome::Included { success: true, .. }), "{:?}", s.outcome);
+        assert_eq!(p.get_balance(to).await.unwrap(), value, "the value arrived");
     }
 }

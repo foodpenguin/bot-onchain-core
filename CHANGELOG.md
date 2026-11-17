@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.5 (unreleased)
+
+Compatible with v0.1.4: no renames, no removed items.
+
+- `Executor::send_with_value` / `ExecHandle::send_with_value`: a send with ETH attached (e.g. moving
+  ETH the wallet received on to another address), with the same checks, nonce handling and in-flight
+  tracking as `send` (which is now `send_with_value` with zero value).
+
 ## v0.1.4 (2026-11-17)
 
 Compatible with v0.1.3: no renames, no removed items.
